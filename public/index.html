@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BazarGhor - Shop online in Bangladesh</title>
+  <meta name="description" content="BazarGhor: mobiles, fashion, electronics, groceries and more. Cash on delivery across Bangladesh.">
+  <meta name="theme-color" content="#0E5A4B">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🛍️%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+
+  <div class="topbar">
+    <div class="wrap topbar-in">
+      <span>Free delivery on orders over ৳1,500</span>
+      <span class="hide-sm">Cash on delivery everywhere in Bangladesh</span>
+    </div>
+  </div>
+
+  <header class="header">
+    <div class="wrap header-in">
+      <a class="logo" href="#/" aria-label="BazarGhor home"><span class="logo-mark">B</span><span class="logo-text">BazarGhor</span></a>
+      <form class="search" id="searchForm" role="search">
+        <input id="searchInput" type="search" placeholder="Search products, brands and categories" aria-label="Search products" autocomplete="off">
+        <button type="submit" aria-label="Search">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        </button>
+      </form>
+      <nav class="actions" aria-label="Account and cart">
+        <a class="act" id="accountLink" href="#/login">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"/></svg>
+          <span id="accountLabel">Login</span>
+        </a>
+        <a class="act" href="#/cart" aria-label="Cart">
+          <span class="cart-ico">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h2.5l2.2 11h10.6L20.5 8H6.4"/><circle cx="9.5" cy="19.5" r="1.4"/><circle cx="17" cy="19.5" r="1.4"/></svg>
+            <b id="cartCount" hidden>0</b>
+          </span>
+          <span class="hide-sm">Cart</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="view" tabindex="-1"></main>
+
+  <footer class="footer">
+    <div class="wrap footer-grid">
+      <div>
+        <div class="logo logo-light"><span class="logo-mark">B</span><span class="logo-text">BazarGhor</span></div>
+        <p class="foot-note">Your everyday marketplace. Real products, honest prices, delivered to your door.</p>
+      </div>
+      <div>
+        <h4>Shop</h4>
+        <a href="#/shop">All products</a>
+        <a href="#/sale">Flash sale</a>
+        <a href="#/orders">My orders</a>
+      </div>
+      <div>
+        <h4>Help</h4>
+        <a href="#/cart">Your cart</a>
+        <a href="#/login">Login</a>
+        <a href="#/register">Create account</a>
+      </div>
+      <div>
+        <h4>Delivery</h4>
+        <p class="foot-note">Dhaka and all districts.<br>Pay with cash when your order arrives.</p>
+      </div>
+    </div>
+    <div class="wrap copy">© <span id="year"></span> BazarGhor. All rights reserved.</div>
+  </footer>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="js/app.js"></script>
+</body>
+</html>
