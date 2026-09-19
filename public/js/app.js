@@ -29,10 +29,16 @@
     const headers = { 'Content-Type': 'application/json' };
     if (state.token) headers.Authorization = 'Bearer ' + state.token;
     let res;
-    try {
-      res = await fetch('/api' + path, { ...opts, headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
-    } catch {
-      throw Object.assign(new Error('No internet connection. Please check and retry.'), { status: 0 });
+    const isGet = !opts.method || opts.method === 'GET';
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await fetch('/api' + path, { ...opts, headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
+      } catch {
+        throw Object.assign(new Error('No internet connection. Please check and retry.'), { status: 0 });
+      }
+      // Database busy (503) hole GET request 2 bar nijei abar chesta kore
+      if (res.status === 503 && isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 800 * (attempt + 1))); continue; }
+      break;
     }
     let data = null;
     try { data = await res.json(); } catch { /* not json */ }
@@ -538,7 +544,7 @@
     const body = $('#adminBody'); body.innerHTML = '<div class="sk" style="height:10rem"></div>';
     try {
       const cats = await loadCats();
-      const { products, total } = await api('/products?limit=48&sort=new');
+      const { products, total } = await api('/products?limit=48&sort=new&_=' + Date.now());
       body.innerHTML = `
         <div class="sec-head"><h2 style="font-size:var(--fs-400)">${total} products</h2><button class="btn btn-sm" id="newP">Add product</button></div>
         <div id="pForm"></div>
