@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { query, getPool } = require('./db');
 
 const app = express();
@@ -251,6 +252,21 @@ app.delete('/api/admin/products/:id', auth, admin, h(async (req, res) => {
   await query('DELETE FROM products WHERE id = ?', [Number(req.params.id)]);
   res.json({ ok: true });
 }));
+
+/* ---------- Cloudinary signed upload (admin only) ----------
+   Browser theke sorasori Cloudinary te upload hoy; secret kokhono browser e ashe na. */
+app.get('/api/admin/upload-signature', auth, admin, (req, res) => {
+  const cloud = process.env.CLOUDINARY_CLOUD_NAME;
+  const key = process.env.CLOUDINARY_API_KEY;
+  const secret = process.env.CLOUDINARY_API_SECRET;
+  if (!cloud || !key || !secret) {
+    return res.status(503).json({ error: 'Photo upload is not set up yet. Add the CLOUDINARY_* variables in Vercel and redeploy.' });
+  }
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder = process.env.CLOUDINARY_FOLDER || 'rumedio-shop/products';
+  const signature = crypto.createHash('sha1').update(`folder=${folder}&timestamp=${timestamp}${secret}`).digest('hex');
+  res.json({ cloud_name: cloud, api_key: key, timestamp, folder, signature });
+});
 
 /* ---------- errors ---------- */
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
