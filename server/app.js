@@ -2,11 +2,12 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { query, getPool } = require('./db');
+const { query, connect, dbScope } = require('./db');
 
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
+app.use(dbScope); // protyek request e ekta connection, sesh hole bondho
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const FREE_SHIP = 1500;
@@ -37,6 +38,12 @@ const PRODUCT_SELECT = `
          c.name AS category_name, c.slug AS category_slug, c.icon AS icon
   FROM products p JOIN categories c ON c.id = p.category_id`;
 
+// Public catalog response CDN e ~30 sec cache hoy, tai DB te kom request jay (freedb.tech er limit er jonno joruri).
+// ?_=... dile cache bypass hoy (admin panel eta use kore, jate edit sathe sathe dekha jay).
+const pub = (req, res) => {
+  res.set('Cache-Control', req.query._ ? 'no-store' : 'public, max-age=0, s-maxage=30, stale-while-revalidate=120');
+};
+
 /* ---------- health ---------- */
 app.get('/api/health', h(async (req, res) => {
   await query('SELECT 1');
@@ -46,6 +53,7 @@ app.get('/api/health', h(async (req, res) => {
 /* ---------- catalog ---------- */
 app.get('/api/categories', h(async (req, res) => {
   const [rows] = await query('SELECT id, name, slug, icon FROM categories ORDER BY sort_order, id');
+  pub(req, res);
   res.json({ categories: rows });
 }));
 
@@ -72,6 +80,7 @@ app.get('/api/products', h(async (req, res) => {
     [...params, limit, (page - 1) * limit]);
   const [[{ total }]] = await query(
     `SELECT COUNT(*) AS total FROM products p JOIN categories c ON c.id = p.category_id WHERE ${w}`, params);
+  pub(req, res);
   res.json({ products: rows, total, page, limit });
 }));
 
@@ -81,6 +90,7 @@ app.get('/api/products/:id', h(async (req, res) => {
   const [related] = await query(
     `${PRODUCT_SELECT} WHERE p.category_id = ? AND p.id <> ? ORDER BY p.sold DESC LIMIT 8`,
     [rows[0].category_id, rows[0].id]);
+  pub(req, res);
   res.json({ product: rows[0], related });
 }));
 
@@ -130,7 +140,7 @@ app.post('/api/orders', auth, h(async (req, res) => {
   if (String(address || '').trim().length < 8) return res.status(400).json({ error: 'Enter your full delivery address' });
   if (String(city || '').trim().length < 2) return res.status(400).json({ error: 'Enter your city or district' });
 
-  const conn = await getPool().getConnection();
+  const conn = await connect();
   try {
     await conn.beginTransaction();
     let subtotal = 0;
@@ -166,7 +176,7 @@ app.post('/api/orders', auth, h(async (req, res) => {
     if (e.code === 'USER') return res.status(400).json({ error: e.message });
     throw e;
   } finally {
-    conn.release();
+    conn.end().catch(() => {});
   }
 }));
 
@@ -272,13 +282,14 @@ app.get('/api/admin/upload-signature', auth, admin, (req, res) => {
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, next) => { // eslint-disable-line
   console.error(err);
+  res.set('Cache-Control', 'no-store');
   if (err.message === 'DB_NOT_CONFIGURED') {
     return res.status(500).json({ error: 'Database is not configured. Set DB_* environment variables.' });
   }
   if (err.code === 'ER_NO_SUCH_TABLE') {
     return res.status(500).json({ error: 'Database tables are missing. Import database/schema.sql first.' });
   }
-  if (['ECONNREFUSED', 'ETIMEDOUT', 'ER_ACCESS_DENIED_ERROR', 'ENOTFOUND', 'ER_USER_LIMIT_REACHED', 'ER_CON_COUNT_ERROR'].includes(err.code)) {
+  if (['ECONNREFUSED', 'ETIMEDOUT', 'ER_ACCESS_DENIED_ERROR', 'ENOTFOUND', 'ER_USER_LIMIT_REACHED', 'ER_CON_COUNT_ERROR', 'ER_TOO_MANY_USER_CONNECTIONS'].includes(err.code)) {
     return res.status(503).json({ error: 'Cannot reach the database right now. Please try again in a moment.' });
   }
   res.status(500).json({ error: 'Server error. Please try again.' });
