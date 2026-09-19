@@ -1,4 +1,4 @@
-/* BazarGhor frontend - vanilla JS single page app (hash routing). */
+/* RumeDio Shop frontend - vanilla JS single page app (hash routing). */
 (() => {
   'use strict';
 
@@ -93,8 +93,11 @@
 
   /* ---------- UI pieces ---------- */
   const tile = (p) => `<div class="tile t${(p.id || 0) % 6}" aria-hidden="true"><span>${esc(p.icon || '🛍️')}</span></div>`;
-  const img = (p) => p.image_url
-    ? `<img src="${esc(p.image_url)}" alt="${esc(p.title)}" loading="lazy" data-id="${p.id || 0}" data-icon="${esc(p.icon || '🛍️')}">`
+  // Cloudinary chobi hole auto-optimize (f_auto,q_auto) + size chhoto kore data/bandwidth bachay
+  const cl = (u, w) => (/^https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/v\d+\//.test(u || '')
+    ? u.replace('/image/upload/', `/image/upload/f_auto,q_auto,c_limit,w_${w}/`) : u);
+  const img = (p, w = 500) => p.image_url
+    ? `<img src="${esc(cl(p.image_url, w))}" alt="${esc(p.title)}" loading="lazy" data-id="${p.id || 0}" data-icon="${esc(p.icon || '🛍️')}">`
     : tile(p);
   const stars = (r) => `<span class="star" aria-hidden="true">★</span><span>${Number(r).toFixed(1)}</span>`;
   const discount = (p) => (p.old_price && p.old_price > p.price ? Math.round((1 - p.price / p.old_price) * 100) : 0);
@@ -278,7 +281,7 @@
     setView(`<div class="wrap section">
       <div class="crumbs"><a href="#/">Home</a> / <a href="#/category/${esc(p.category_slug)}">${esc(p.category_name)}</a> / ${esc(p.title)}</div>
       <div class="pdp">
-        <div class="pdp-img">${img(p)}</div>
+        <div class="pdp-img">${img(p, 900)}</div>
         <div>
           <h1>${esc(p.title)}</h1>
           <div class="meta" style="padding:0">${stars(p.rating)}<span>${p.sold} sold</span>${stockPill(p.stock)}</div>
@@ -318,7 +321,7 @@
       <div class="two-col">
         <div class="panel panel-pad">${state.cart.map((i) => `
           <div class="line" data-id="${i.id}">
-            <a class="thumb" href="#/product/${i.id}">${img(i)}</a>
+            <a class="thumb" href="#/product/${i.id}">${img(i, 200)}</a>
             <div><h3>${esc(i.title)}</h3><div class="price" style="margin:.1rem 0">${money(i.price)}</div>
               <div class="row">
                 <div class="qty"><button data-a="dec" aria-label="Decrease">−</button><input value="${i.qty}" readonly aria-label="Quantity"><button data-a="inc" aria-label="Increase">+</button></div>
@@ -493,6 +496,44 @@
     } catch (e) { body.innerHTML = `<div class="form-error">${esc(e.message)}</div>`; }
   }
 
+  /* ---------- photo upload (Cloudinary, signed) ---------- */
+  async function shrink(file, max = 1400) {
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) return file; // gif etc. jemon ache temon
+    try {
+      const bmp = await createImageBitmap(file);
+      const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); // transparent PNG er jonno
+      ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+      return blob && blob.size < file.size ? blob : file;
+    } catch { return file; }
+  }
+
+  async function uploadImage(file, onProgress) {
+    const sig = await api('/admin/upload-signature');
+    const fd = new FormData();
+    fd.append('file', file, file.name || 'photo.jpg');
+    fd.append('api_key', sig.api_key);
+    fd.append('timestamp', sig.timestamp);
+    fd.append('folder', sig.folder);
+    fd.append('signature', sig.signature);
+    return new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`);
+      x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+      x.onload = () => {
+        let d = {}; try { d = JSON.parse(x.responseText); } catch { /* ignore */ }
+        if (x.status >= 200 && x.status < 300 && d.secure_url) resolve(d.secure_url);
+        else reject(new Error((d.error && d.error.message) || 'Upload failed. Please try again.'));
+      };
+      x.onerror = () => reject(new Error('Network error while uploading. Please try again.'));
+      x.send(fd);
+    });
+  }
+
   async function adminProducts() {
     const body = $('#adminBody'); body.innerHTML = '<div class="sk" style="height:10rem"></div>';
     try {
@@ -502,7 +543,7 @@
         <div class="sec-head"><h2 style="font-size:var(--fs-400)">${total} products</h2><button class="btn btn-sm" id="newP">Add product</button></div>
         <div id="pForm"></div>
         <div class="panel table-wrap"><table><thead><tr><th></th><th>Title</th><th>Price</th><th>Stock</th><th></th></tr></thead><tbody>
-        ${products.map((p) => `<tr><td><div class="thumb-sm">${img(p)}</div></td><td>${esc(p.title)}<div class="hint">${esc(p.category_name)}</div></td>
+        ${products.map((p) => `<tr><td><div class="thumb-sm">${img(p, 120)}</div></td><td>${esc(p.title)}<div class="hint">${esc(p.category_name)}</div></td>
           <td>${money(p.price)}</td><td>${p.stock}</td>
           <td><div class="t-actions"><button class="btn btn-ghost btn-sm" data-edit="${p.id}">Edit</button><button class="btn btn-danger btn-sm" data-del="${p.id}">Delete</button></div></td></tr>`).join('')}
         </tbody></table></div>`;
@@ -516,12 +557,37 @@
           <div class="field-row">
             <div class="field"><label for="pPrice">Price (৳)</label><input id="pPrice" type="number" min="1" step="1" value="${p.price || ''}"></div>
             <div class="field"><label for="pOld">Old price (৳, optional)</label><input id="pOld" type="number" min="0" step="1" value="${p.old_price || ''}"></div></div>
-          <div class="field"><label for="pImg">Image link (optional)</label><input id="pImg" placeholder="https://..." value="${esc(p.image_url || '')}"></div>
+          <div class="field"><label for="pPick">Product photo</label>
+            <div class="uploader">
+              <div class="up-preview" id="upPrev"></div>
+              <div class="up-side">
+                <button type="button" class="btn btn-ghost btn-sm" id="pPick">Upload photo</button>
+                <input type="file" id="pFile" accept="image/*" hidden>
+                <div class="hint" id="upStatus" aria-live="polite">JPG, PNG or WEBP. Photo is resized automatically.</div>
+              </div></div>
+            <input id="pImg" placeholder="Or paste an image link (https://...)" value="${esc(p.image_url || '')}" style="margin-top:.5rem" aria-label="Image link"></div>
           <div class="field"><label for="pDesc">Description</label><textarea id="pDesc">${esc(p.description || '')}</textarea></div>
           <label class="check"><input type="checkbox" id="pFeat" ${p.is_featured ? 'checked' : ''}> Featured product</label>
           <div class="form-error" id="pErr" hidden></div>
-          <div class="t-actions"><button class="btn">Save product</button><button type="button" class="btn btn-ghost" id="pCancel">Cancel</button></div></form>`;
+          <div class="t-actions"><button class="btn" id="pSave">Save product</button><button type="button" class="btn btn-ghost" id="pCancel">Cancel</button></div></form>`;
         $('#pCancel').addEventListener('click', () => { $('#pForm').innerHTML = ''; });
+        const prev = $('#upPrev'), status = $('#upStatus'), pick = $('#pPick'), file = $('#pFile'), save = $('#pSave');
+        const showPrev = () => { prev.innerHTML = img({ id: p.id || 0, title: 'Preview', image_url: $('#pImg').value.trim() || null, icon: '📷' }, 300); };
+        showPrev();
+        $('#pImg').addEventListener('change', showPrev);
+        pick.addEventListener('click', () => file.click());
+        file.addEventListener('change', async () => {
+          const f = file.files[0]; if (!f) return;
+          if (!f.type.startsWith('image/')) { status.textContent = 'Please choose an image file.'; return; }
+          if (f.size > 15 * 1024 * 1024) { status.textContent = 'Image is too large (max 15 MB).'; return; }
+          pick.disabled = true; save.disabled = true; status.textContent = 'Preparing photo...';
+          try {
+            const url = await uploadImage(await shrink(f), (n) => { status.textContent = 'Uploading... ' + n + '%'; });
+            $('#pImg').value = url; showPrev();
+            status.textContent = 'Photo uploaded ✓ Now press Save product.';
+          } catch (ex) { status.textContent = ex.message; toast(ex.message, 'err'); }
+          pick.disabled = false; save.disabled = false; file.value = '';
+        });
         $('#pf').addEventListener('submit', async (e) => {
           e.preventDefault();
           const b = { title: $('#pTitle').value, category_id: $('#pCat').value, stock: $('#pStock').value, price: $('#pPrice').value,
