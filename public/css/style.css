@@ -1,4 +1,4 @@
-/* BazarGhor - design tokens
+/* RumeDio Shop - design tokens
    Type scale is fluid (clamp) so text stays comfortable from 320px phones to wide desktops. */
 :root {
   --brand: #0E5A4B;
@@ -298,3 +298,10 @@ th { color: var(--muted); font-weight: 500; white-space: nowrap; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- photo uploader (admin) ---------- */
+.uploader { display: flex; gap: .9rem; align-items: center; }
+.up-preview { flex: none; width: 5.5rem; height: 5.5rem; border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--line); background: #F0F2EE; }
+.up-preview .tile { font-size: 2rem; }
+.up-side { display: grid; gap: .4rem; justify-items: start; min-width: 0; }
+.up-side .hint { overflow-wrap: anywhere; }
