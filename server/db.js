@@ -26,6 +26,7 @@ function config() {
     charset: 'utf8mb4',
     connectTimeout: 15000,
     decimalNumbers: true,
+    dateStrings: ['DATE'], // expires_at = 'YYYY-MM-DD' (timezone er jhamela nai)
     // Kono DB provider SSL chaile .env e DB_SSL=true din
     ssl: process.env.DB_SSL === 'true' ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined
   };
