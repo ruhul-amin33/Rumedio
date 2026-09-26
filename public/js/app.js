@@ -92,16 +92,18 @@
   const cartCount = () => state.cart.reduce((n, i) => n + i.qty, 0);
   const subtotal = () => state.cart.reduce((n, i) => n + i.price * i.qty, 0);
 
-  // size wala product hole (id + size) alada line; stock = oi size er stock
-  function addToCart(p, qty = 1, size = '', sizeStock = null) {
-    const avail = size && sizeStock != null ? sizeStock : p.stock;
+  // colour/size wala product hole (id + colour + size) alada line; stock = oi option er stock
+  function addToCart(p, qty = 1, sel = {}) {
+    const color = sel.color || '', size = sel.size || '';
+    const avail = (color || size) && sel.stock != null ? sel.stock : p.stock;
     const max = Math.max(1, Math.min(20, avail));
-    const found = state.cart.find((i) => i.id === p.id && (i.size || '') === size);
+    const found = state.cart.find((i) => i.id === p.id && (i.size || '') === size && (i.color || '') === color);
     if (found) { found.qty = Math.min(max, found.qty + qty); found.stock = avail; }
-    else state.cart.push({ id: p.id, title: p.title, price: p.price, old_price: p.old_price, image_url: p.image_url, icon: p.icon, stock: avail, size, qty: Math.min(max, qty) });
+    else state.cart.push({ id: p.id, title: p.title, price: p.price, old_price: p.old_price, image_url: p.image_url, icon: p.icon, stock: avail, color, color_hex: sel.hex || null, size, qty: Math.min(max, qty) });
     saveCart();
   }
-  const itemLine = (i) => `${esc(i.title)}${i.size ? ` <span class="muted">(Size ${esc(i.size)})</span>` : ''} × ${i.qty}`;
+  const optText = (i) => [i.color, i.size && `Size ${i.size}`].filter(Boolean).join(', ');
+  const itemLine = (i) => `${esc(i.title)}${optText(i) ? ` <span class="muted">(${esc(optText(i))})</span>` : ''} × ${i.qty}`;
 
   function setSession(data) {
     state.token = data.token; state.user = data.user;
@@ -139,23 +141,28 @@
   const img = (p, w = 500) => p.image_url
     ? `<img src="${esc(cl(p.image_url, w))}" alt="${esc(p.title)}" loading="lazy" data-id="${p.id || 0}" data-icon="${esc(p.icon || '🛍️')}">`
     : tile(p);
-  const stars = (r) => `<span class="star" aria-hidden="true">★</span><span>${Number(r).toFixed(1)}</span>`;
   const discount = (p) => (p.old_price && p.old_price > p.price ? Math.round((1 - p.price / p.old_price) * 100) : 0);
+  const soldOut = (p) => !!p.is_out_of_stock || p.stock <= 0;
+  const showStock = (p) => !(p.hide_stock || state.cfg.hideStock);
+  const fmtSold = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
+  const starsHtml = (r) => `<span class="stars" style="--r:${Number(r)}" role="img" aria-label="${Number(r).toFixed(1)} out of 5">★★★★★</span>`;
+  // rating 0 hole ba sold 0 hole ta dekhano hoy na (admin theke customise kora jay)
+  const ratingMeta = (p) => (Number(p.rating) > 0 ? `${starsHtml(p.rating)}<span>${Number(p.rating).toFixed(1)}</span>` : '') + (p.sold > 0 ? `<span>${fmtSold(p.sold)} sold</span>` : '');
 
   function card(p) {
-    const d = discount(p);
-    return `<a class="card" href="#/product/${p.id}">
-      <div class="card-img">${img(p)}${d ? `<span class="badge">-${d}%</span>` : ''}</div>
+    const d = discount(p), out = soldOut(p);
+    return `<a class="card${out ? ' is-out' : ''}" href="#/product/${p.id}">
+      <div class="card-img">${img(p)}${d && !out ? `<span class="badge">-${d}%</span>` : ''}${out ? '<span class="soldout-tag">Sold out</span>' : ''}</div>
       <div class="card-body">
         <h3 class="card-title">${esc(p.title)}</h3>
         <div class="price">${money(p.price)}</div>
         ${d ? `<div class="old">${money(p.old_price)}</div>` : ''}
-        <div class="meta">${stars(p.rating)}<span>${p.sold} sold</span></div>
+        <div class="meta">${ratingMeta(p)}</div>
       </div></a>`;
   }
   const skeletonGrid = (n = 10) => `<div class="grid">${'<div class="sk sk-card"></div>'.repeat(n)}</div>`;
-  const stockPill = (s) => s <= 0 ? '<span class="pill pill-out">Out of stock</span>'
-    : s <= 5 ? `<span class="pill pill-low">Only ${s} left</span>` : '<span class="pill pill-ok">In stock</span>';
+  const stockPill = (p) => (soldOut(p) ? '<span class="pill pill-out">Out of stock</span>'
+    : !showStock(p) ? '' : p.stock <= 5 ? `<span class="pill pill-low">Only ${p.stock} left</span>` : '<span class="pill pill-ok">In stock</span>');
 
   const errorBox = (e) => `<div class="wrap section"><div class="panel empty">
     <div class="em">⚠️</div><h2>We couldn't load this page</h2><p>${esc(e.message)}</p>
@@ -335,58 +342,127 @@
     setView('<div class="wrap section"><div class="sk" style="height:26rem"></div></div>');
     const { product: p, related } = await api('/products/' + id);
     if (my !== renderId) return;
-    const d = discount(p);
+    const d = discount(p), out = soldOut(p);
     const hasSizes = Array.isArray(p.sizes) && p.sizes.length > 0;
+    const hasColors = Array.isArray(p.colors) && p.colors.length > 0;
+    const variants = p.variants || [];
+    const images = p.images && p.images.length ? p.images : (p.image_url ? [p.image_url] : []);
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const gallery = images.length ? `<div class="gallery">
+        <div class="g-main">
+          <div class="g-track" id="gTrack" tabindex="0" aria-label="Product photos">${images.map((u, i) =>
+            `<div class="g-slide"><img src="${esc(cl(u, 1000))}" alt="${esc(p.title)}${images.length > 1 ? ' photo ' + (i + 1) : ''}" ${i ? 'loading="lazy"' : ''} data-id="${p.id}" data-icon="${esc(p.icon || '🛍️')}"></div>`).join('')}</div>
+          ${images.length > 1 ? `<button type="button" class="g-nav prev" id="gPrev" aria-label="Previous photo">‹</button><button type="button" class="g-nav next" id="gNext" aria-label="Next photo">›</button><span class="g-count" id="gCount">1 / ${images.length}</span>` : ''}
+          ${out ? '<span class="soldout-tag big">Sold out</span>' : ''}
+        </div>
+        ${images.length > 1 ? `<div class="g-thumbs" id="gThumbs">${images.map((u, i) => `<button type="button" class="g-thumb${i ? '' : ' on'}" data-i="${i}" aria-label="Show photo ${i + 1}"><img src="${esc(cl(u, 160))}" alt="" loading="lazy" data-id="${p.id}" data-icon="${esc(p.icon || '🛍️')}"></button>`).join('')}</div>` : ''}
+      </div>`
+      : `<div class="gallery"><div class="g-main">${tile(p)}${out ? '<span class="soldout-tag big">Sold out</span>' : ''}</div></div>`;
+    const colorBox = hasColors ? `<div class="size-pick" id="colorPick" role="radiogroup" aria-label="Colour">
+        <div class="size-head"><b>Colour</b><span class="hint" id="colorNote">Please select a colour</span></div>
+        <div class="colors">${p.colors.map((c) => `<label class="color-opt"><input type="radio" name="color" value="${esc(c.color)}"><span class="dot" style="--c:${esc(c.hex || '#cccccc')}"></span><span class="cname">${esc(c.color)}</span></label>`).join('')}</div>
+      </div>` : '';
+    const sizeBox = hasSizes ? `<div class="size-pick" id="sizePick" role="radiogroup" aria-label="Size">
+        <div class="size-head"><b>Size</b><span class="hint" id="sizeNote">Please select a size</span></div>
+        <div class="sizes">${p.sizes.map((z) => `<label class="size-opt"><input type="radio" name="size" value="${esc(z.size)}"><span>${esc(z.size)}</span></label>`).join('')}</div>
+      </div>` : '';
     setView(`<div class="wrap section">
       <div class="crumbs"><a href="#/">Home</a> / <a href="#/category/${esc(p.category_slug)}">${esc(p.category_name)}</a> / ${esc(p.title)}</div>
       <div class="pdp">
-        <div class="pdp-img">${img(p, 900)}</div>
+        ${gallery}
         <div>
           <h1>${esc(p.title)}</h1>
-          <div class="meta" style="padding:0">${stars(p.rating)}<span>${p.sold} sold</span>${stockPill(p.stock)}</div>
+          <div class="meta" style="padding:0">${ratingMeta(p)}${stockPill(p)}</div>
           <div class="price-row"><span class="price-big">${money(p.price)}</span>
             ${d ? `<span class="old">${money(p.old_price)}</span><span class="pill pill-out">Save ${d}%</span>` : ''}</div>
-          ${p.stock > 0 ? `
-          ${hasSizes ? `<div class="size-pick" id="sizePick" role="radiogroup" aria-label="Size">
-            <div class="size-head"><b>Size</b><span class="hint" id="sizeNote">Please select a size</span></div>
-            <div class="sizes">${p.sizes.map((z) => `<label class="size-opt${z.stock <= 0 ? ' out' : ''}"><input type="radio" name="size" value="${esc(z.size)}" ${z.stock <= 0 ? 'disabled' : ''}><span>${esc(z.size)}</span></label>`).join('')}</div>
-          </div>` : ''}
+          ${!out ? `
+          ${colorBox}${sizeBox}
+          <div class="hint stock-note" id="stockNote" aria-live="polite"></div>
           <div class="qty" role="group" aria-label="Quantity">
             <button type="button" data-q="-1" aria-label="Decrease">−</button>
-            <input id="qty" type="number" value="1" min="1" max="${hasSizes ? 20 : Math.min(20, p.stock)}" aria-label="Quantity">
+            <input id="qty" type="number" value="1" min="1" max="${hasSizes || hasColors ? 20 : Math.min(20, p.stock)}" aria-label="Quantity">
             <button type="button" data-q="1" aria-label="Increase">+</button></div>
           <div class="buy-row">
             <button class="btn btn-accent" id="buyNow">Buy now</button>
-            <button class="btn btn-ghost" id="addCart">Add to cart</button></div>` : '<p class="muted">This item is currently unavailable.</p>'}
+            <button class="btn btn-ghost" id="addCart">Add to cart</button></div>`
+          : '<div class="oos-box"><b>Out of stock</b><p>This item is currently unavailable. Please check again later.</p></div>'}
           <div class="perks"><span>🚚 ${esc(deliveryHint())}</span><span>💵 Cash on delivery</span></div>
           <div class="desc"><h3>Product details</h3><p>${esc(p.description || 'No description available.')}</p></div>
         </div>
       </div>
       ${related.length ? `<section class="section" style="padding-bottom:0"><div class="sec-head"><h2>You may also like</h2></div>
         <div class="grid">${related.map(card).join('')}</div></section>` : ''}</div>`);
-    if (p.stock > 0) {
+
+    // ---- photo gallery (swipe / arrows / thumbnails) ----
+    const track = $('#gTrack');
+    if (track && images.length > 1) {
+      const thumbs = $$('.g-thumb'), tbox = $('#gThumbs');
+      let idx = 0, raf;
+      const setIdx = (i) => {
+        idx = i;
+        thumbs.forEach((t, k) => t.classList.toggle('on', k === i));
+        $('#gCount').textContent = `${i + 1} / ${images.length}`;
+        const t = thumbs[i]; if (t) tbox.scrollTo({ left: t.offsetLeft - (tbox.clientWidth - t.clientWidth) / 2, behavior: reduce ? 'auto' : 'smooth' });
+      };
+      const go = (i) => { i = (i + images.length) % images.length; track.scrollTo({ left: i * track.clientWidth, behavior: reduce ? 'auto' : 'smooth' }); if (reduce) setIdx(i); };
+      track.addEventListener('scroll', () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { const i = Math.round(track.scrollLeft / track.clientWidth); if (i !== idx) setIdx(i); }); });
+      thumbs.forEach((t) => t.addEventListener('click', () => go(+t.dataset.i)));
+      $('#gPrev').addEventListener('click', () => go(idx - 1));
+      $('#gNext').addEventListener('click', () => go(idx + 1));
+      track.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft') { e.preventDefault(); go(idx - 1); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); go(idx + 1); }
+      });
+    }
+
+    // ---- colour / size / quantity ----
+    if (!out) {
       const qty = $('#qty');
-      let max = hasSizes ? 20 : Math.min(20, p.stock), size = '', sizeStock = null;
+      let selColor = '', selSize = '', selStock = null;
+      let max = hasSizes || hasColors ? 20 : Math.min(20, p.stock);
       const clamp = () => { qty.value = Math.max(1, Math.min(max, parseInt(qty.value) || 1)); return +qty.value; };
+      const vstock = (color, size) => { const v = variants.find((x) => x.color === color && x.size === size); return v ? v.stock : 0; };
+      const refresh = () => {
+        for (let pass = 0; pass < 2; pass++) { // ek-ta bodlale onnota unavailable hote pare, tai 2 bar
+          $$('input[name="size"]').forEach((r) => {
+            const z = p.sizes.find((x) => x.size === r.value);
+            const st = hasColors && selColor ? vstock(selColor, r.value) : z.stock;
+            r.disabled = st <= 0; r.closest('.size-opt').classList.toggle('out', st <= 0);
+            if (r.disabled && r.checked) { r.checked = false; selSize = ''; }
+          });
+          $$('input[name="color"]').forEach((r) => {
+            const c = p.colors.find((x) => x.color === r.value);
+            const st = hasSizes && selSize ? vstock(r.value, selSize) : c.stock;
+            r.disabled = st <= 0; r.closest('.color-opt').classList.toggle('out', st <= 0);
+            if (r.disabled && r.checked) { r.checked = false; selColor = ''; }
+          });
+        }
+        const complete = (!hasColors || selColor) && (!hasSizes || selSize);
+        selStock = complete && (hasColors || hasSizes) ? vstock(hasColors ? selColor : '', hasSizes ? selSize : '') : null;
+        max = selStock != null ? Math.min(20, selStock) : (hasSizes || hasColors ? 20 : Math.min(20, p.stock));
+        if (hasColors) $('#colorNote').textContent = selColor ? selColor : 'Please select a colour';
+        if (hasSizes) $('#sizeNote').textContent = selSize ? `Size ${selSize}` : 'Please select a size';
+        $('#stockNote').textContent = selStock != null && showStock(p) && selStock <= 5 ? `Only ${selStock} left` : '';
+        clamp();
+      };
       $$('[data-q]').forEach((b) => b.addEventListener('click', () => { qty.value = clamp() + +b.dataset.q; clamp(); }));
       qty.addEventListener('change', clamp);
-      $$('input[name="size"]').forEach((r) => r.addEventListener('change', () => {
-        size = r.value;
-        sizeStock = (p.sizes.find((z) => z.size === size) || {}).stock || 0;
-        max = Math.min(20, sizeStock); clamp();
-        $('#sizeNote').textContent = sizeStock <= 5 ? `Only ${sizeStock} left in size ${size}` : `Size ${size} selected`;
-        $('#sizePick').classList.remove('need');
-      }));
-      // size wala product e size na bachle add hobe na
+      $$('input[name="color"]').forEach((r) => r.addEventListener('change', () => { selColor = r.value; $('#colorPick').classList.remove('need'); refresh(); }));
+      $$('input[name="size"]').forEach((r) => r.addEventListener('change', () => { selSize = r.value; $('#sizePick').classList.remove('need'); refresh(); }));
+      refresh();
+      // colour/size wala product e sob na bachle add hobe na
       const ready = () => {
-        if (hasSizes && !size) {
-          const box = $('#sizePick'); box.classList.add('need'); $('#sizeNote').textContent = 'Please select a size first';
-          box.scrollIntoView({ behavior: 'smooth', block: 'center' }); toast('Please select a size', 'err'); return false;
-        }
-        return true;
+        const miss = [];
+        if (hasColors && !selColor) { miss.push('colour'); $('#colorPick').classList.add('need'); }
+        if (hasSizes && !selSize) { miss.push('size'); $('#sizePick').classList.add('need'); }
+        if (!miss.length) return true;
+        (document.querySelector('.size-pick.need')).scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast(`Please select a ${miss.join(' and ')}`, 'err');
+        return false;
       };
-      $('#addCart').addEventListener('click', () => { if (ready()) { addToCart(p, clamp(), size, sizeStock); toast(size ? `Added to cart (Size ${size})` : 'Added to cart'); } });
-      $('#buyNow').addEventListener('click', () => { if (ready()) { addToCart(p, clamp(), size, sizeStock); location.hash = '#/checkout'; } });
+      const chosen = () => ({ color: selColor, size: selSize, stock: selStock, hex: ((p.colors || []).find((c) => c.color === selColor) || {}).hex });
+      $('#addCart').addEventListener('click', () => { if (ready()) { addToCart(p, clamp(), chosen()); toast(optText(chosen()) ? `Added to cart (${optText(chosen())})` : 'Added to cart'); } });
+      $('#buyNow').addEventListener('click', () => { if (ready()) { addToCart(p, clamp(), chosen()); location.hash = '#/checkout'; } });
     }
   }
 
@@ -401,7 +477,7 @@
         <div class="panel panel-pad">${state.cart.map((i, k) => `
           <div class="line" data-k="${k}">
             <a class="thumb" href="#/product/${i.id}">${img(i, 200)}</a>
-            <div><h3>${esc(i.title)}</h3>${i.size ? `<div class="hint">Size: <b>${esc(i.size)}</b></div>` : ''}<div class="price" style="margin:.1rem 0">${money(i.price)}</div>
+            <div><h3>${esc(i.title)}</h3>${i.color || i.size ? `<div class="hint opt-line">${i.color ? `<span class="dot sm" style="--c:${esc(i.color_hex || '#cccccc')}"></span>${esc(i.color)}` : ''}${i.color && i.size ? ' · ' : ''}${i.size ? `Size: <b>${esc(i.size)}</b>` : ''}</div>` : ''}<div class="price" style="margin:.1rem 0">${money(i.price)}</div>
               <div class="row">
                 <div class="qty"><button data-a="dec" aria-label="Decrease">−</button><input value="${i.qty}" readonly aria-label="Quantity"><button data-a="inc" aria-label="Increase">+</button></div>
                 <button class="linkbtn" data-a="rm">Remove</button></div></div></div>`).join('')}</div>
@@ -488,7 +564,7 @@
       if (!code) { vMsg.textContent = 'Enter a voucher code'; return; }
       vApply.disabled = true; vMsg.textContent = 'Checking...';
       try {
-        voucher = await api('/vouchers/check', { method: 'POST', body: { code, items: state.cart.map((i) => ({ id: i.id, qty: i.qty, size: i.size || '' })) } });
+        voucher = await api('/vouchers/check', { method: 'POST', body: { code, items: state.cart.map((i) => ({ id: i.id, qty: i.qty, color: i.color || '', size: i.size || '' })) } });
         vCode.value = voucher.code; vCode.disabled = true;
         vMsg.innerHTML = `<span style="color:var(--ok)">✓ ${esc(voucher.code)} applied${voucher.freeShipping ? ': free delivery' : ': you save ' + money(voucher.discount)}</span> <button type="button" class="linkbtn" id="vRemove">Remove</button>`;
         $('#vRemove').addEventListener('click', () => { voucher = null; vCode.value = ''; vCode.disabled = false; vApply.disabled = false; vMsg.textContent = ''; paint(); });
@@ -506,7 +582,7 @@
       const btn = $('#coBtn'), err = $('#coErr'); err.hidden = true; btn.disabled = true;
       try {
         const r = await api('/orders', { method: 'POST', body: {
-          items: state.cart.map((i) => ({ id: i.id, qty: i.qty, size: i.size || '' })),
+          items: state.cart.map((i) => ({ id: i.id, qty: i.qty, color: i.color || '', size: i.size || '' })),
           name: $('#coName').value, phone: $('#coPhone').value, address: $('#coAddr').value,
           city: $('#coCity').value, zone, voucher_code: voucher ? voucher.code : '', payment_method: 'cod' } });
         state.cart = []; saveCart();
@@ -923,6 +999,9 @@
           <div class="field"><label for="stOut">Outside Dhaka (৳)</label><input id="stOut" type="number" min="0" step="1" value="${c.feeOutside}"></div></div>
         <div class="field"><label for="stFree">Free delivery on orders over (৳)</label><input id="stFree" type="number" min="0" step="1" value="${c.freeShipMin}"></div>
         <label class="check"><input type="checkbox" id="stFreeOut" ${c.freeShipOutside ? 'checked' : ''}> Also give free delivery outside Dhaka over this amount</label>
+        <h3 style="margin-top:.6rem">Stock display</h3>
+        <label class="check"><input type="checkbox" id="stHide" ${c.hideStock ? 'checked' : ''}> <span>Hide stock from customers on all products (no "In stock" or "Only 3 left")</span></label>
+        <p class="hint">Sold-out products still show "Sold out". You can also hide stock for a single product when you edit it.</p>
         <p class="hint">You can also make a single order free from Orders → Delivery charge for this order.</p>
         <h3 style="margin-top:.6rem">Website text</h3>
         <div class="field"><label for="stTop">Top bar message (optional)</label><input id="stTop" maxlength="140" value="${esc(c.topbarText)}" placeholder="Leave empty to show delivery charges automatically"></div>
@@ -936,7 +1015,7 @@
           const r = await api('/admin/settings', { method: 'PUT', body: {
             siteName: $('#stName').value, supportEmail: $('#stMail').value, supportPhone: $('#stPhone').value,
             feeDhaka: $('#stDhaka').value, feeOutside: $('#stOut').value, freeShipMin: $('#stFree').value,
-            freeShipOutside: $('#stFreeOut').checked, topbarText: $('#stTop').value, footerText: $('#stFoot').value } });
+            freeShipOutside: $('#stFreeOut').checked, hideStock: $('#stHide').checked, topbarText: $('#stTop').value, footerText: $('#stFoot').value } });
           state.cfg = { ...state.cfg, ...r.settings }; applyConfig();
           toast('Settings saved');
         } catch (ex) { err.textContent = ex.message; err.hidden = false; }
@@ -983,6 +1062,10 @@
     });
   }
 
+  const COLOR_PRESETS = [['Black', '#111111'], ['White', '#ffffff'], ['Gray', '#9ca3af'], ['Red', '#dc2626'], ['Maroon', '#7f1d1d'], ['Orange', '#f97316'],
+    ['Yellow', '#facc15'], ['Green', '#16a34a'], ['Olive', '#65753a'], ['Blue', '#2563eb'], ['Navy', '#1e3a8a'], ['Sky Blue', '#38bdf8'],
+    ['Purple', '#7c3aed'], ['Pink', '#ec4899'], ['Brown', '#78350f'], ['Beige', '#d6c3a3']];
+
   async function adminProducts() {
     const body = $('#adminBody'); body.innerHTML = '<div class="sk" style="height:10rem"></div>';
     try {
@@ -992,10 +1075,13 @@
         <div class="sec-head"><h2 style="font-size:var(--fs-400)">${total} products</h2><button class="btn btn-sm" id="newP">Add product</button></div>
         <div id="pForm"></div>
         <div class="panel table-wrap"><table><thead><tr><th></th><th>Title</th><th>Price</th><th>Stock</th><th></th></tr></thead><tbody>
-        ${products.map((p) => `<tr><td><div class="thumb-sm">${img(p, 120)}</div></td><td>${esc(p.title)}<div class="hint">${esc(p.category_name)}</div></td>
+        ${products.map((p) => `<tr><td><div class="thumb-sm">${img(p, 120)}</div></td>
+          <td>${esc(p.title)}<div class="hint">${esc(p.category_name)}</div>
+            <div class="pill-row">${p.is_out_of_stock ? '<span class="pill pill-out">Marked out of stock</span>' : ''}${p.hide_stock ? '<span class="pill pill-pending">Stock hidden</span>' : ''}</div></td>
           <td>${money(p.price)}</td><td>${p.stock}</td>
           <td><div class="t-actions"><button class="btn btn-ghost btn-sm" data-edit="${p.id}">Edit</button><button class="btn btn-danger btn-sm" data-del="${p.id}">Delete</button></div></td></tr>`).join('')}
         </tbody></table></div>`;
+
       const form = (p = {}) => {
         $('#pForm').innerHTML = `<form class="panel panel-pad form" id="pf" style="margin-bottom:1rem" novalidate>
           <h3>${p.id ? 'Edit product' : 'New product'}</h3>
@@ -1003,92 +1089,183 @@
           <div class="field-row">
             <div class="field"><label for="pCat">Category</label><select id="pCat">${cats.map((c) => `<option value="${c.id}" data-sizes="${c.has_sizes ? 1 : 0}" ${c.id === p.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
             <div class="field" id="pStockWrap"><label for="pStock">Stock</label><input id="pStock" type="number" min="0" value="${p.stock ?? 10}"></div></div>
+
+          <fieldset class="sizes-box" id="pColors">
+            <legend>Colours (optional)</legend>
+            <p class="hint">If this product comes in more than one colour, tap the colours below. Customers must pick one.</p>
+            <div class="size-presets">${COLOR_PRESETS.map(([n, h]) => `<button type="button" class="color-preset" data-n="${esc(n)}" data-h="${h}"><span class="dot sm" style="--c:${h}"></span>${esc(n)}</button>`).join('')}</div>
+            <div class="color-custom"><input id="colorName" maxlength="30" placeholder="Other colour, e.g. Mustard" aria-label="Colour name"><input type="color" id="colorHex" value="#888888" aria-label="Pick the colour"><button type="button" class="btn btn-ghost btn-sm" id="colorAdd">Add colour</button></div>
+            <div class="chip-list" id="colorChips"></div>
+          </fieldset>
+
           <fieldset class="sizes-box" id="pSizes" hidden>
-            <legend>Sizes &amp; stock</legend>
-            <p class="hint">Tap a size to add it, then type how many pieces you have in each size. Customers must pick one of these sizes.</p>
+            <legend>Sizes</legend>
+            <p class="hint">Tap the sizes you have. Customers must pick one.</p>
             ${SIZE_GROUPS.map(([g, list]) => `<div class="size-group"><span class="hint">${g}</span><div class="size-presets">${list.map((z) => `<button type="button" class="size-preset" data-v="${esc(z)}">${esc(z)}</button>`).join('')}</div></div>`).join('')}
             <div class="size-custom"><input id="sizeCustom" maxlength="20" placeholder="Other size, e.g. 5XL or 44" aria-label="Custom size"><button type="button" class="btn btn-ghost btn-sm" id="sizeAdd">Add size</button></div>
-            <div id="sizeRows" class="size-rows"></div>
+            <div class="chip-list" id="sizeChips"></div>
+          </fieldset>
+
+          <fieldset class="sizes-box" id="pStockGrid" hidden>
+            <legend>Stock for each option</legend>
+            <p class="hint">Type how many pieces you have. Use 0 if an option is sold out.</p>
+            <div id="optRows"></div>
             <div class="size-total">Total stock: <b id="sizeTotal">0</b></div>
           </fieldset>
+
           <div class="field-row">
             <div class="field"><label for="pPrice">Price (৳)</label><input id="pPrice" type="number" min="1" step="1" value="${p.price || ''}"></div>
             <div class="field"><label for="pOld">Old price (৳, optional)</label><input id="pOld" type="number" min="0" step="1" value="${p.old_price || ''}"></div></div>
-          <div class="field"><label for="pPick">Product photo</label>
-            <div class="uploader">
-              <div class="up-preview" id="upPrev"></div>
-              <div class="up-side">
-                <button type="button" class="btn btn-ghost btn-sm" id="pPick">Upload photo</button>
-                <input type="file" id="pFile" accept="image/*" hidden>
-                <div class="hint" id="upStatus" aria-live="polite">JPG, PNG or WEBP. Photo is resized automatically.</div>
-              </div></div>
-            <input id="pImg" placeholder="Or paste an image link (https://...)" value="${esc(p.image_url || '')}" style="margin-top:.5rem" aria-label="Image link"></div>
+          <div class="field-row">
+            <div class="field"><label for="pRating">Rating shown to customers (0–5)</label><input id="pRating" type="number" min="0" max="5" step="0.1" value="${p.rating ?? 4.5}"><span class="hint">Use 0 to hide the rating.</span></div>
+            <div class="field"><label for="pSold">Sold count shown to customers</label><input id="pSold" type="number" min="0" step="1" value="${p.sold ?? 0}"><span class="hint">Real orders add to this number. Use 0 to hide it.</span></div></div>
+
+          <div class="field"><label for="imgAdd">Product photos</label>
+            <p class="hint" style="margin:0 0 .5rem">The first photo is the main photo. Add up to 10. Customers can swipe through them.</p>
+            <div class="img-grid" id="imgGrid"></div>
+            <div class="t-actions" style="margin-top:.6rem"><button type="button" class="btn btn-ghost btn-sm" id="imgAdd">Add photos</button><input type="file" id="imgFile" accept="image/*" multiple hidden></div>
+            <div class="hint" id="imgStatus" aria-live="polite">JPG, PNG or WEBP. You can pick several photos at once.</div>
+            <div class="link-row" style="margin-top:.5rem"><input id="imgLink" placeholder="Or paste a photo link (https://...)" aria-label="Photo link"><button type="button" class="btn btn-ghost btn-sm" id="imgLinkAdd">Add link</button></div></div>
+
           <div class="field"><label for="pDesc">Description</label><textarea id="pDesc">${esc(p.description || '')}</textarea></div>
           <label class="check"><input type="checkbox" id="pFeat" ${p.is_featured ? 'checked' : ''}> Featured product</label>
+          <label class="check"><input type="checkbox" id="pOut" ${p.is_out_of_stock ? 'checked' : ''}> <span>Mark as <b>out of stock</b> (customers see "Sold out" and cannot buy)</span></label>
+          <label class="check"><input type="checkbox" id="pHide" ${p.hide_stock ? 'checked' : ''}> <span>Hide stock from customers (no "In stock" or "Only 3 left")</span></label>
           <div class="form-error" id="pErr" hidden></div>
           <div class="t-actions"><button class="btn" id="pSave">Save product</button><button type="button" class="btn btn-ghost" id="pCancel">Cancel</button></div></form>`;
         $('#pCancel').addEventListener('click', () => { $('#pForm').innerHTML = ''; });
-        // ---- sizes editor ----
-        let sizes = (p.sizes || []).map((z) => ({ size: z.size, stock: z.stock }));
+
+        // ---- colours + sizes + stock grid ----
+        const key = (c, z) => `${c.toLowerCase()}|${z.toLowerCase()}`;
+        let sizes = [], colors = [], stockMap = {};
+        (p.variants || []).forEach((v) => {
+          if (v.size && !sizes.includes(v.size)) sizes.push(v.size);
+          if (v.color && !colors.some((c) => c.name === v.color)) colors.push({ name: v.color, hex: v.color_hex || '#cccccc' });
+          stockMap[key(v.color, v.size)] = v.stock;
+        });
         const usesSizes = () => $('#pCat').selectedOptions[0].dataset.sizes === '1';
-        const renderSizes = () => {
-          $('#sizeRows').innerHTML = sizes.length ? sizes.map((z, i) => `<div class="size-row"><b>${esc(z.size)}</b>
-            <label class="sr-only" for="sz${i}">Stock for size ${esc(z.size)}</label>
-            <input id="sz${i}" type="number" min="0" step="1" value="${z.stock}" data-si="${i}"><span class="hint">pcs</span>
-            <button type="button" class="linkbtn" data-sx="${i}">Remove</button></div>`).join('') : '<p class="hint">No sizes added yet.</p>';
-          $$('.size-preset').forEach((b) => b.classList.toggle('on', sizes.some((z) => z.size.toLowerCase() === b.dataset.v.toLowerCase())));
-          $('#sizeTotal').textContent = sizes.reduce((n, z) => n + (parseInt(z.stock) || 0), 0);
+        const cols = () => (usesSizes() ? sizes : ['']);
+        const rows = () => (colors.length ? colors : [{ name: '', hex: null }]);
+        const hasOptions = () => usesSizes() || colors.length > 0;
+        const total = () => { $('#sizeTotal').textContent = rows().reduce((n, c) => n + cols().reduce((m, z) => m + (parseInt(stockMap[key(c.name, z)]) || 0), 0), 0); };
+        const fillDefaults = () => rows().forEach((c) => cols().forEach((z) => { if (stockMap[key(c.name, z)] === undefined) stockMap[key(c.name, z)] = 10; }));
+        const renderOpts = () => {
+          fillDefaults();
+          $('#sizeChips').innerHTML = sizes.length ? sizes.map((z, i) => `<span class="chip-x">${esc(z)}<button type="button" data-sx="${i}" aria-label="Remove size ${esc(z)}">✕</button></span>`).join('') : '<span class="hint">No sizes yet.</span>';
+          $$('.size-preset').forEach((b) => b.classList.toggle('on', sizes.some((z) => z.toLowerCase() === b.dataset.v.toLowerCase())));
+          $('#colorChips').innerHTML = colors.length ? colors.map((c, i) => `<span class="chip-x"><span class="dot sm" style="--c:${esc(c.hex)}"></span>${esc(c.name)}<button type="button" data-cx="${i}" aria-label="Remove colour ${esc(c.name)}">✕</button></span>`).join('') : '<span class="hint">No colours added. Customers will not choose a colour.</span>';
+          $$('.color-preset').forEach((b) => b.classList.toggle('on', colors.some((c) => c.name.toLowerCase() === b.dataset.n.toLowerCase())));
+          const on = hasOptions();
+          $('#pSizes').hidden = !usesSizes(); $('#pStockGrid').hidden = !on; $('#pStockWrap').hidden = on;
+          $('#optRows').innerHTML = on ? rows().map((c, ci) => `<div class="opt-group">
+            ${c.name ? `<div class="opt-head"><span class="dot sm" style="--c:${esc(c.hex || '#cccccc')}"></span><b>${esc(c.name)}</b></div>` : ''}
+            <div class="opt-cells">${cols().length ? cols().map((z, si) => `<label class="opt-cell"><span>${esc(z) || 'Stock'}</span><input type="number" min="0" step="1" data-c="${ci}" data-s="${si}" value="${stockMap[key(c.name, z)] ?? 0}"></label>`).join('') : '<span class="hint">Add at least one size above.</span>'}</div></div>`).join('') : '';
+          total();
         };
         const addSize = (v) => {
           v = String(v).trim().replace(/\s+/g, ' '); if (!v) return;
-          if (sizes.some((z) => z.size.toLowerCase() === v.toLowerCase())) { toast(`Size ${v} is already added`, 'err'); return; }
-          sizes.push({ size: v, stock: 10 }); renderSizes();
+          if (sizes.some((z) => z.toLowerCase() === v.toLowerCase())) { toast(`Size ${v} is already added`, 'err'); return; }
+          sizes.push(v); renderOpts();
         };
-        const syncSizes = () => { const on = usesSizes(); $('#pSizes').hidden = !on; $('#pStockWrap').hidden = on; };
+        const addColor = (n, h) => {
+          n = String(n).trim().replace(/\s+/g, ' '); if (!n) return;
+          if (colors.some((c) => c.name.toLowerCase() === n.toLowerCase())) { toast(`Colour ${n} is already added`, 'err'); return; }
+          colors.push({ name: n, hex: h }); renderOpts();
+        };
         $$('.size-preset').forEach((b) => b.addEventListener('click', () => {
-          const i = sizes.findIndex((z) => z.size.toLowerCase() === b.dataset.v.toLowerCase());
-          if (i >= 0) sizes.splice(i, 1); else addSize(b.dataset.v);
-          renderSizes();
+          const i = sizes.findIndex((z) => z.toLowerCase() === b.dataset.v.toLowerCase());
+          if (i >= 0) { sizes.splice(i, 1); renderOpts(); } else addSize(b.dataset.v);
+        }));
+        $$('.color-preset').forEach((b) => b.addEventListener('click', () => {
+          const i = colors.findIndex((c) => c.name.toLowerCase() === b.dataset.n.toLowerCase());
+          if (i >= 0) { colors.splice(i, 1); renderOpts(); } else addColor(b.dataset.n, b.dataset.h);
         }));
         $('#sizeAdd').addEventListener('click', () => { addSize($('#sizeCustom').value); $('#sizeCustom').value = ''; });
         $('#sizeCustom').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSize($('#sizeCustom').value); $('#sizeCustom').value = ''; } });
-        $('#sizeRows').addEventListener('input', (e) => { if (e.target.dataset.si !== undefined) { sizes[+e.target.dataset.si].stock = e.target.value; $('#sizeTotal').textContent = sizes.reduce((n, z) => n + (parseInt(z.stock) || 0), 0); } });
-        $('#sizeRows').addEventListener('click', (e) => { const x = e.target.closest('[data-sx]'); if (x) { sizes.splice(+x.dataset.sx, 1); renderSizes(); } });
-        $('#pCat').addEventListener('change', syncSizes);
-        renderSizes(); syncSizes();
-        const prev = $('#upPrev'), status = $('#upStatus'), pick = $('#pPick'), file = $('#pFile'), save = $('#pSave');
-        const showPrev = () => { prev.innerHTML = img({ id: p.id || 0, title: 'Preview', image_url: $('#pImg').value.trim() || null, icon: '📷' }, 300); };
-        showPrev();
-        $('#pImg').addEventListener('change', showPrev);
-        pick.addEventListener('click', () => file.click());
-        file.addEventListener('change', async () => {
-          const f = file.files[0]; if (!f) return;
-          if (!f.type.startsWith('image/')) { status.textContent = 'Please choose an image file.'; return; }
-          if (f.size > 15 * 1024 * 1024) { status.textContent = 'Image is too large (max 15 MB).'; return; }
-          pick.disabled = true; save.disabled = true; status.textContent = 'Preparing photo...';
-          try {
-            const url = await uploadImage(await shrink(f), (n) => { status.textContent = 'Uploading... ' + n + '%'; });
-            $('#pImg').value = url; showPrev();
-            status.textContent = 'Photo uploaded ✓ Now press Save product.';
-          } catch (ex) { status.textContent = ex.message; toast(ex.message, 'err'); }
-          pick.disabled = false; save.disabled = false; file.value = '';
+        $('#colorAdd').addEventListener('click', () => { addColor($('#colorName').value, $('#colorHex').value); $('#colorName').value = ''; });
+        $('#colorName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addColor($('#colorName').value, $('#colorHex').value); $('#colorName').value = ''; } });
+        $('#sizeChips').addEventListener('click', (e) => { const x = e.target.closest('[data-sx]'); if (x) { sizes.splice(+x.dataset.sx, 1); renderOpts(); } });
+        $('#colorChips').addEventListener('click', (e) => { const x = e.target.closest('[data-cx]'); if (x) { colors.splice(+x.dataset.cx, 1); renderOpts(); } });
+        $('#optRows').addEventListener('input', (e) => {
+          if (e.target.dataset.c === undefined) return;
+          stockMap[key(rows()[+e.target.dataset.c].name, cols()[+e.target.dataset.s])] = e.target.value; total();
         });
+        $('#pCat').addEventListener('change', renderOpts);
+        renderOpts();
+
+        // ---- photos (many) ----
+        let images = (p.images || (p.image_url ? [p.image_url] : [])).slice();
+        const status = $('#imgStatus');
+        const renderImgs = () => {
+          $('#imgGrid').innerHTML = images.length ? images.map((u, i) => `<div class="img-tile${i === 0 ? ' main' : ''}">
+            ${img({ id: p.id || 0, title: 'Photo ' + (i + 1), image_url: u, icon: '📷' }, 300)}
+            ${i === 0 ? '<span class="main-tag">Main</span>' : ''}
+            <div class="img-actions">
+              <button type="button" data-l="${i}" aria-label="Move earlier" ${i === 0 ? 'disabled' : ''}>◀</button>
+              <button type="button" data-r="${i}" aria-label="Move later" ${i === images.length - 1 ? 'disabled' : ''}>▶</button>
+              <button type="button" data-x="${i}" aria-label="Remove photo">✕</button></div></div>`).join('') : '<p class="hint" style="margin:0">No photos yet.</p>';
+        };
+        $('#imgGrid').addEventListener('click', (e) => {
+          const l = e.target.closest('[data-l]'), r = e.target.closest('[data-r]'), x = e.target.closest('[data-x]');
+          if (l) { const i = +l.dataset.l; [images[i - 1], images[i]] = [images[i], images[i - 1]]; }
+          else if (r) { const i = +r.dataset.r; [images[i + 1], images[i]] = [images[i], images[i + 1]]; }
+          else if (x) images.splice(+x.dataset.x, 1);
+          else return;
+          renderImgs();
+        });
+        const addLink = () => {
+          const u = $('#imgLink').value.trim(); if (!u) return;
+          if (!/^https?:\/\//i.test(u)) { status.textContent = 'The link must start with https://'; return; }
+          if (images.length >= 10) { status.textContent = 'You can add up to 10 photos.'; return; }
+          if (!images.includes(u)) images.push(u);
+          $('#imgLink').value = ''; renderImgs(); status.textContent = 'Photo added ✓';
+        };
+        $('#imgLinkAdd').addEventListener('click', addLink);
+        $('#imgLink').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addLink(); } });
+        $('#imgAdd').addEventListener('click', () => $('#imgFile').click());
+        $('#imgFile').addEventListener('change', async () => {
+          const files = [...$('#imgFile').files]; $('#imgFile').value = '';
+          if (!files.length) return;
+          const room = 10 - images.length;
+          if (room <= 0) { status.textContent = 'You can add up to 10 photos.'; return; }
+          const use = files.slice(0, room);
+          $('#imgAdd').disabled = true; $('#pSave').disabled = true;
+          let done = 0;
+          for (let i = 0; i < use.length; i++) {
+            const f = use[i];
+            if (!f.type.startsWith('image/')) { status.textContent = `"${f.name}" is not an image.`; continue; }
+            if (f.size > 15 * 1024 * 1024) { status.textContent = `"${f.name}" is too large (max 15 MB).`; continue; }
+            try {
+              status.textContent = `Uploading photo ${i + 1} of ${use.length}...`;
+              const url = await uploadImage(await shrink(f, 1600), (n) => { status.textContent = `Uploading photo ${i + 1} of ${use.length}... ${n}%`; });
+              images.push(url); done++; renderImgs();
+            } catch (ex) { status.textContent = ex.message; toast(ex.message, 'err'); }
+          }
+          if (done) status.textContent = `${done} photo${done > 1 ? 's' : ''} uploaded ✓ Now press Save product.` + (files.length > use.length ? ' (Only 10 photos are allowed, the rest were skipped.)' : '');
+          $('#imgAdd').disabled = false; $('#pSave').disabled = false;
+        });
+        renderImgs();
+
         $('#pf').addEventListener('submit', async (e) => {
           e.preventDefault();
-          const b = { title: $('#pTitle').value, category_id: $('#pCat').value, stock: $('#pStock').value, price: $('#pPrice').value,
-            old_price: $('#pOld').value, image_url: $('#pImg').value, description: $('#pDesc').value, is_featured: $('#pFeat').checked };
-          if (usesSizes()) { b.sizes = sizes; b.stock = 0; }
+          const b = { title: $('#pTitle').value, category_id: $('#pCat').value, price: $('#pPrice').value, old_price: $('#pOld').value,
+            description: $('#pDesc').value, is_featured: $('#pFeat').checked, images, rating: $('#pRating').value, sold: $('#pSold').value,
+            is_out_of_stock: $('#pOut').checked, hide_stock: $('#pHide').checked };
+          if (hasOptions()) {
+            b.stock = 0;
+            b.variants = rows().flatMap((c) => cols().map((z) => ({ color: c.name, color_hex: c.name ? c.hex : null, size: z, stock: stockMap[key(c.name, z)] ?? 0 })));
+          } else b.stock = $('#pStock').value;
           try {
             await api(p.id ? '/admin/products/' + p.id : '/admin/products', { method: p.id ? 'PUT' : 'POST', body: b });
             toast('Product saved'); adminProducts();
           } catch (ex) { $('#pErr').textContent = ex.message; $('#pErr').hidden = false; }
         });
-        $('#pf').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $('#pf').scrollIntoView({ behavior: 'smooth', block: 'start' });
       };
       $('#newP').addEventListener('click', () => form());
       $$('[data-edit]', body).forEach((b) => b.addEventListener('click', async () => {
         const base = products.find((x) => x.id === +b.dataset.edit);
-        try { const d = await api('/products/' + base.id + '?_=' + Date.now()); form({ ...base, sizes: d.product.sizes || [] }); }
+        try { const d = await api('/products/' + base.id + '?_=' + Date.now()); form({ ...base, ...d.product }); }
         catch (ex) { toast(ex.message, 'err'); }
       }));
       $$('[data-del]', body).forEach((b) => b.addEventListener('click', async () => {
@@ -1105,6 +1282,7 @@
     const faqs = [
       ['How do I place an order?', 'Add products to your cart, press Proceed to checkout, log in, fill in your delivery details and place the order. You pay in cash when it arrives.'],
       ['What are the delivery charges?', deliveryHint() + ' Sometimes we make delivery free for special orders. If that happens, your order page will show it.'],
+      ['How do I choose a colour?', 'If a product comes in more than one colour, tap the colour you want on the product page. A crossed-out colour is sold out in the size you picked.'],
       ['How do I choose my size?', 'For clothes and shoes, tap the size you want on the product page before adding to cart. A crossed-out size is sold out. If you are unsure about a size, email us before ordering.'],
       ['How do I use a voucher?', 'On the checkout page, type your voucher code in the Voucher box and press Apply. Some vouchers need a minimum order, and each customer can use a code once.'],
       ['How do I pay?', 'Cash on delivery. Pay the delivery person when your order arrives.'],
