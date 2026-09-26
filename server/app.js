@@ -32,7 +32,7 @@ function admin(req, res, next) {
 }
 const PRODUCT_SELECT = `
   SELECT p.id, p.category_id, p.title, p.description, p.price, p.old_price, p.stock,
-         p.image_url, p.rating, p.sold, p.is_featured, p.created_at,
+         p.image_url, p.rating, p.sold, p.is_featured, p.is_out_of_stock, p.hide_stock, p.created_at,
          c.name AS category_name, c.slug AS category_slug, c.icon AS icon, c.has_sizes AS has_sizes
   FROM products p JOIN categories c ON c.id = p.category_id`;
 
@@ -59,6 +59,7 @@ async function getConfig(run = query) {
     feeDhaka: num(s.fee_dhaka, num(env.FEE_DHAKA, 60)),
     feeOutside: num(s.fee_outside, num(env.FEE_OUTSIDE, 120)),
     freeShipOutside: s.free_ship_outside !== undefined ? s.free_ship_outside === '1' : env.FREE_SHIP_OUTSIDE === 'true',
+    hideStock: s.hide_stock === '1',
     topbarText: s.topbar_text || '',
     footerText: s.footer_text || ''
   };
@@ -146,8 +147,15 @@ app.get('/api/products/:id', h(async (req, res) => {
   const [related] = await query(
     `${PRODUCT_SELECT} WHERE p.category_id = ? AND p.id <> ? ORDER BY p.sold DESC LIMIT 8`,
     [rows[0].category_id, rows[0].id]);
-  const [sizes] = await query('SELECT size, stock FROM product_sizes WHERE product_id = ? ORDER BY sort_order, id', [rows[0].id]);
-  rows[0].sizes = sizes;
+  const [variants] = await query('SELECT color, color_hex, size, stock FROM product_variants WHERE product_id = ? ORDER BY sort_order, id', [rows[0].id]);
+  const sizes = [], colors = [];   // sizes/colors = alada alada list (stock = oi size/color er jogfol)
+  for (const v of variants) {
+    if (v.size) { let z = sizes.find((x) => x.size === v.size); if (!z) { z = { size: v.size, stock: 0 }; sizes.push(z); } z.stock += v.stock; }
+    if (v.color) { let c = colors.find((x) => x.color === v.color); if (!c) { c = { color: v.color, hex: v.color_hex, stock: 0 }; colors.push(c); } c.stock += v.stock; }
+  }
+  rows[0].variants = variants; rows[0].sizes = sizes; rows[0].colors = colors;
+  const [imgs] = await query('SELECT url FROM product_images WHERE product_id = ? ORDER BY sort_order, id', [rows[0].id]);
+  rows[0].images = imgs.length ? imgs.map((x) => x.url) : (rows[0].image_url ? [rows[0].image_url] : []);
   pub(req, res);
   res.json({ product: rows[0], related });
 }));
@@ -225,24 +233,28 @@ app.post('/api/orders', auth, h(async (req, res) => {
     // Ek-i product+size bar bar thakle qty jog kore nao
     const want = new Map();
     for (const it of items.slice(0, 50)) {
-      const id = Number(it.id), size = String(it.size || '').trim();
+      const id = Number(it.id), size = String(it.size || '').trim(), color = String(it.color || '').trim();
       const qty = Math.max(1, Math.min(20, parseInt(it.qty) || 1));
-      const key = `${id}|${size.toLowerCase()}`;
-      const w = want.get(key) || { id, size, qty: 0 };
+      const key = `${id}|${color.toLowerCase()}|${size.toLowerCase()}`;
+      const w = want.get(key) || { id, size, color, qty: 0 };
       w.qty += qty; want.set(key, w);
     }
     for (const w of want.values()) {
       const [rows] = await conn.query('SELECT * FROM products WHERE id = ? FOR UPDATE', [w.id]);
       if (!rows.length) throw userErr('A product in your cart is no longer available');
       const p = rows[0];
-      const [srows] = await conn.query('SELECT * FROM product_sizes WHERE product_id = ? FOR UPDATE', [p.id]);
-      let sizeRow = null;
-      if (srows.length) { // size wala product: size bachai must
-        if (!w.size) throw userErr(`Please choose a size for "${p.title}"`);
-        sizeRow = srows.find((z) => z.size.toLowerCase() === w.size.toLowerCase());
-        if (!sizeRow) throw userErr(`Size ${w.size} is not available for "${p.title}"`);
+      if (p.is_out_of_stock) throw userErr(`"${p.title}" is out of stock`);
+      const [vrows] = await conn.query('SELECT * FROM product_variants WHERE product_id = ? FOR UPDATE', [p.id]);
+      let sizeRow = null; // (naam purono, ekhon colour+size option row)
+      if (vrows.length) { // colour/size wala product: option bachai must
+        const needsColor = vrows.some((v) => v.color !== ''), needsSize = vrows.some((v) => v.size !== '');
+        if (needsColor && !w.color) throw userErr(`Please choose a colour for "${p.title}"`);
+        if (needsSize && !w.size) throw userErr(`Please choose a size for "${p.title}"`);
+        sizeRow = vrows.find((v) => v.color.toLowerCase() === (needsColor ? w.color.toLowerCase() : '') && v.size.toLowerCase() === (needsSize ? w.size.toLowerCase() : ''));
+        if (!sizeRow) throw userErr(`That colour/size is not available for "${p.title}"`);
+        const label = [sizeRow.color, sizeRow.size && `size ${sizeRow.size}`].filter(Boolean).join(', ');
         if (sizeRow.stock < w.qty) {
-          throw userErr(sizeRow.stock > 0 ? `Only ${sizeRow.stock} left in size ${sizeRow.size} of "${p.title}"` : `Size ${sizeRow.size} of "${p.title}" is sold out`);
+          throw userErr(sizeRow.stock > 0 ? `Only ${sizeRow.stock} left in ${label} of "${p.title}"` : `${label} of "${p.title}" is sold out`);
         }
       } else if (p.stock < w.qty) throw userErr(`Only ${p.stock} left of "${p.title}"`);
       subtotal += p.price * w.qty;
@@ -260,10 +272,10 @@ app.post('/api/orders', auth, h(async (req, res) => {
        zone, 'cod', subtotal, discount, vr ? vr.code : null, shipping, total]);
     for (const { p, qty, sizeRow } of lines) {
       await conn.query(
-        'INSERT INTO order_items (order_id,product_id,title,price,qty,size,image_url) VALUES (?,?,?,?,?,?,?)',
-        [o.insertId, p.id, p.title, p.price, qty, sizeRow ? sizeRow.size : null, p.image_url]);
+        'INSERT INTO order_items (order_id,product_id,title,price,qty,color,size,image_url) VALUES (?,?,?,?,?,?,?,?)',
+        [o.insertId, p.id, p.title, p.price, qty, sizeRow && sizeRow.color ? sizeRow.color : null, sizeRow && sizeRow.size ? sizeRow.size : null, p.image_url]);
       await conn.query('UPDATE products SET stock = stock - ?, sold = sold + ? WHERE id = ?', [qty, qty, p.id]);
-      if (sizeRow) await conn.query('UPDATE product_sizes SET stock = stock - ? WHERE id = ?', [qty, sizeRow.id]);
+      if (sizeRow) await conn.query('UPDATE product_variants SET stock = stock - ? WHERE id = ?', [qty, sizeRow.id]);
     }
     if (vr) await conn.query('UPDATE vouchers SET used_count = used_count + 1 WHERE id = ?', [vr.v.id]);
     await conn.commit();
@@ -330,54 +342,86 @@ function readProduct(b) {
   if (oldPrice !== null && !(oldPrice >= 0)) return { error: 'Enter a valid old price' };
   if (!(stock >= 0)) return { error: 'Enter a valid stock number' };
   if (!(categoryId > 0)) return { error: 'Choose a category' };
-  const img = String(b.image_url || '').trim();
-  if (img && !/^https?:\/\//i.test(img)) return { error: 'Image link must start with http:// or https://' };
-  return { r: { categoryId, title, description: String(b.description || '').trim(), price, oldPrice, stock, img: img || null, featured: b.is_featured ? 1 : 0 } };
-}
-
-function readSizes(list) {
-  if (!Array.isArray(list) || !list.length) return { error: 'Add at least one size (choose "Free Size" if the item has only one)' };
-  if (list.length > 30) return { error: 'Too many sizes (max 30)' };
-  const seen = new Set(), out = [];
-  for (const it of list) {
-    const size = String((it && it.size) || '').trim().replace(/\s+/g, ' ');
-    const stock = parseInt(it && it.stock);
-    if (!size || size.length > 20) return { error: 'Each size must be 1-20 characters' };
-    if (!(stock >= 0) || stock > 100000) return { error: `Enter a valid stock for size ${size}` };
-    if (seen.has(size.toLowerCase())) return { error: `Size ${size} is added twice` };
-    seen.add(size.toLowerCase()); out.push({ size, stock });
+  // Chobi: notun format images:[url...] (prothom-ta main); purono image_url o cholbe
+  const raw = Array.isArray(b.images) ? b.images : (b.image_url ? [b.image_url] : []);
+  const images = [];
+  for (const u of raw.map((x) => String(x || '').trim()).filter(Boolean)) {
+    if (!/^https?:\/\//i.test(u)) return { error: 'Every photo link must start with http:// or https://' };
+    if (u.length > 500) return { error: 'A photo link is too long' };
+    if (!images.includes(u)) images.push(u);
   }
-  return { sizes: out };
+  if (images.length > 10) return { error: 'You can add up to 10 photos per product' };
+  let rating = b.rating === '' || b.rating == null ? null : Number(b.rating);
+  if (rating !== null) { if (!(rating >= 0 && rating <= 5)) return { error: 'Rating must be between 0 and 5' }; rating = Math.round(rating * 10) / 10; }
+  const sold = b.sold === '' || b.sold == null ? null : parseInt(b.sold);
+  if (sold !== null && !(sold >= 0 && sold <= 100000000)) return { error: 'Enter a valid sold number' };
+  const flag = (v) => (v === undefined || v === null ? null : v ? 1 : 0);
+  return { r: { categoryId, title, description: String(b.description || '').trim(), price, oldPrice, stock, images, img: images[0] || null,
+    featured: b.is_featured ? 1 : 0, rating, sold, out: flag(b.is_out_of_stock), hide: flag(b.hide_stock) } };
 }
 
-// Product + tar size gulo ekshathe (transaction). Category te "has_sizes" thakle size dewa must, stock = shob size er jogfol.
-async function saveProduct(id, r, sizesIn) {
+// Client theke variants: [{color, color_hex, size, stock}]. Purono format sizes:[{size,stock}] o cholbe.
+function readVariants(list, hasSizes) {
+  if (!Array.isArray(list)) list = [];
+  if (list.length > 300) return { error: 'Too many colour/size options (max 300)' };
+  const seen = new Set(), out = [];
+  let withColor = 0, withSize = 0;
+  for (const it of list) {
+    const color = String((it && it.color) || '').trim().replace(/\s+/g, ' ');
+    const size = hasSizes ? String((it && it.size) || '').trim().replace(/\s+/g, ' ') : '';
+    const stock = parseInt(it && it.stock);
+    let hex = it && it.color_hex ? String(it.color_hex).trim() : null;
+    const label = [color, size && `size ${size}`].filter(Boolean).join(', ') || 'option';
+    if (color.length > 30) return { error: 'Colour name must be 30 characters or less' };
+    if (size.length > 20) return { error: 'Each size must be 20 characters or less' };
+    if (hasSizes && !size) return { error: 'Every option needs a size' };
+    if (!(stock >= 0) || stock > 100000) return { error: `Enter a valid stock for ${label}` };
+    if (hex && !/^#[0-9a-fA-F]{6}$/.test(hex)) hex = null;
+    const key = `${color.toLowerCase()}|${size.toLowerCase()}`;
+    if (seen.has(key)) return { error: `${label} is added twice` };
+    seen.add(key);
+    if (color) withColor++;
+    if (size) withSize++;
+    out.push({ color, color_hex: color && hex ? hex.toLowerCase() : null, size, stock });
+  }
+  if (withColor && withColor !== out.length) return { error: 'Every option needs a colour' };
+  if (hasSizes && !out.length) return { error: 'Add at least one size (choose "Free Size" if the item has only one)' };
+  return { variants: out };
+}
+
+// Product + tar colour/size option gulo ekshathe (transaction). Category te "has_sizes" thakle size must; stock = shob option er jogfol.
+async function saveProduct(id, r, body) {
   const conn = await connect();
   try {
     await conn.beginTransaction();
     const [crows] = await conn.query('SELECT has_sizes FROM categories WHERE id = ?', [r.categoryId]);
     if (!crows.length) throw userErr('Choose a category');
-    let sizes = [];
-    if (crows[0].has_sizes) {
-      const sr = readSizes(sizesIn);
-      if (sr.error) throw userErr(sr.error);
-      sizes = sr.sizes;
-    }
-    const stock = sizes.length ? sizes.reduce((n, z) => n + z.stock, 0) : r.stock;
+    const hasSizes = !!crows[0].has_sizes;
+    const list = Array.isArray(body.variants) ? body.variants
+      : Array.isArray(body.sizes) ? body.sizes.map((z) => ({ color: '', size: z.size, stock: z.stock })) : [];
+    const vr = readVariants(list, hasSizes);
+    if (vr.error) throw userErr(vr.error);
+    const variants = vr.variants;
+    const stock = variants.length ? variants.reduce((n, v) => n + v.stock, 0) : r.stock;
     if (id == null) {
       const [ins] = await conn.query(
-        `INSERT INTO products (category_id,title,description,price,old_price,stock,image_url,is_featured,rating,sold)
-         VALUES (?,?,?,?,?,?,?,?,4.5,0)`,
-        [r.categoryId, r.title, r.description, r.price, r.oldPrice, stock, r.img, r.featured]);
+        `INSERT INTO products (category_id,title,description,price,old_price,stock,image_url,is_featured,is_out_of_stock,hide_stock,rating,sold)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [r.categoryId, r.title, r.description, r.price, r.oldPrice, stock, r.img, r.featured, r.out || 0, r.hide || 0, r.rating == null ? 4.5 : r.rating, r.sold || 0]);
       id = ins.insertId;
     } else {
       await conn.query(
-        `UPDATE products SET category_id=?, title=?, description=?, price=?, old_price=?, stock=?, image_url=?, is_featured=? WHERE id=?`,
-        [r.categoryId, r.title, r.description, r.price, r.oldPrice, stock, r.img, r.featured, id]);
+        `UPDATE products SET category_id=?, title=?, description=?, price=?, old_price=?, stock=?, image_url=?, is_featured=?,
+           is_out_of_stock=COALESCE(?, is_out_of_stock), hide_stock=COALESCE(?, hide_stock), rating=COALESCE(?, rating), sold=COALESCE(?, sold) WHERE id=?`,
+        [r.categoryId, r.title, r.description, r.price, r.oldPrice, stock, r.img, r.featured, r.out, r.hide, r.rating, r.sold, id]);
     }
-    await conn.query('DELETE FROM product_sizes WHERE product_id = ?', [id]);
-    for (let i = 0; i < sizes.length; i++) {
-      await conn.query('INSERT INTO product_sizes (product_id,size,stock,sort_order) VALUES (?,?,?,?)', [id, sizes[i].size, sizes[i].stock, i + 1]);
+    await conn.query('DELETE FROM product_images WHERE product_id = ?', [id]);
+    for (let i = 0; i < r.images.length; i++) await conn.query('INSERT INTO product_images (product_id,url,sort_order) VALUES (?,?,?)', [id, r.images[i], i + 1]);
+    await conn.query('DELETE FROM product_variants WHERE product_id = ?', [id]);
+    for (let i = 0; i < variants.length; i++) {
+      const v = variants[i];
+      await conn.query('INSERT INTO product_variants (product_id,color,color_hex,size,stock,sort_order) VALUES (?,?,?,?,?,?)',
+        [id, v.color, v.color_hex, v.size, v.stock, i + 1]);
     }
     await conn.commit();
     return id;
@@ -392,14 +436,14 @@ async function saveProduct(id, r, sizesIn) {
 app.post('/api/admin/products', auth, admin, h(async (req, res) => {
   const p = readProduct(req.body);
   if (p.error) return res.status(400).json({ error: p.error });
-  try { res.json({ id: await saveProduct(null, p.r, req.body.sizes) }); }
+  try { res.json({ id: await saveProduct(null, p.r, req.body) }); }
   catch (e) { if (e.code === 'USER') return res.status(400).json({ error: e.message }); throw e; }
 }));
 
 app.put('/api/admin/products/:id', auth, admin, h(async (req, res) => {
   const p = readProduct(req.body);
   if (p.error) return res.status(400).json({ error: p.error });
-  try { await saveProduct(Number(req.params.id), p.r, req.body.sizes); res.json({ ok: true }); }
+  try { await saveProduct(Number(req.params.id), p.r, req.body); res.json({ ok: true }); }
   catch (e) { if (e.code === 'USER') return res.status(400).json({ error: e.message }); throw e; }
 }));
 
@@ -595,7 +639,7 @@ app.put('/api/admin/settings', auth, admin, h(async (req, res) => {
   const rows = [
     ['site_name', siteName], ['support_email', email], ['support_phone', phone],
     ['fee_dhaka', String(feeDhaka)], ['fee_outside', String(feeOutside)], ['free_ship_min', String(freeMin)],
-    ['free_ship_outside', b.freeShipOutside ? '1' : '0'],
+    ['free_ship_outside', b.freeShipOutside ? '1' : '0'], ['hide_stock', b.hideStock ? '1' : '0'],
     ['topbar_text', str(b.topbarText, 140)], ['footer_text', str(b.footerText, 200)]
   ];
   await query('INSERT INTO settings (k, v) VALUES ? ON DUPLICATE KEY UPDATE v = VALUES(v)', [rows]);
