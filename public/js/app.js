@@ -257,7 +257,11 @@
             <div class="countdown" aria-label="Time left today">Ends in <b id="cdH">00</b><b id="cdM">00</b><b id="cdS">00</b></div>
             <a class="link" href="#/sale">See all</a>
           </div>
-          <div class="rail">${sale.products.map(card).join('')}</div>
+          <div class="rail-wrap at-start" id="saleRailWrap">
+            <div class="rail" id="saleRail">${sale.products.map(card).join('')}</div>
+            <div class="rail-nav prev"><button type="button" data-rail-scroll="-1" aria-label="Scroll left" disabled>‹</button></div>
+            <div class="rail-nav next"><button type="button" data-rail-scroll="1" aria-label="Scroll right">›</button></div>
+          </div>
         </div></section>` : ''}
 
       <section class="wrap section">
@@ -287,6 +291,24 @@
       dots.forEach((d, i) => d.addEventListener('click', () => show(i)));
       if (!reduce) timers.push(setInterval(() => show(cur + 1), 5500));
     }
+
+    // horizontal rails (Flash sale etc.): round arrow buttons, hide at each end, remember scroll fraction
+    $$('.rail-wrap').forEach((wrap) => {
+      const rail = $('.rail', wrap);
+      const update = () => {
+        const max = rail.scrollWidth - rail.clientWidth;
+        wrap.classList.toggle('at-start', rail.scrollLeft <= 2);
+        wrap.classList.toggle('at-end', rail.scrollLeft >= max - 2);
+        $$('[data-rail-scroll]', wrap).forEach((b) => { b.disabled = max <= 2; });
+        $('[data-rail-scroll="-1"]', wrap).disabled = rail.scrollLeft <= 2;
+        $('[data-rail-scroll="1"]', wrap).disabled = rail.scrollLeft >= max - 2;
+      };
+      rail.addEventListener('scroll', update, { passive: true });
+      $$('[data-rail-scroll]', wrap).forEach((b) => b.addEventListener('click', () => {
+        rail.scrollBy({ left: rail.clientWidth * 0.85 * +b.dataset.railScroll, behavior: reduce ? 'auto' : 'smooth' });
+      }));
+      update();
+    });
 
     // countdown to midnight
     if ($('#cdH')) {
